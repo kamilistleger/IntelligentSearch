@@ -12,106 +12,216 @@ from typing import Tuple
 import json
 import os
 import sys
+import random
+import time
+
+
+
+class TimeUp(Exception):
+    """Raised when we've blown our move-time budget mid-search."""
+    pass
 
 
 class StudentAgent:
-    """Base agent class - implement get_move()"""
-
     def __init__(self):
         self.my_symbol = None
         self.opponent_symbol = None
-    
+        self.max_moves = 20
+        self.depth = 5
+        self.time_budget = 0.8  # seconds, leave headroom under server limit
+
     def get_move(self, state):
+        """Called by server - return (row, col)"""
         board = self._parse_grid(state['grid'])
 
         self.my_symbol = state['your_symbol']
         self.opponent_symbol = state['opponent_symbol']
 
-         #win
-        win_move = self._find_winning_move(board, self.my_symbol)
-        if win_move:
-            return win_move
+        if not board:
+            return (0, 0)
 
-         #block
-        block_move = self._find_winning_move(board, self.opponent_symbol)
-        if block_move:
-             return block_move
+        win = self._find_winning_move(board, self.my_symbol)
+        if win:
+            return win
 
-        score, move = self.minimax_with_move(
-          board,
-          depth=3,
-          is_maximizing=True
-    )
+        block = self._find_winning_move(board, self.opponent_symbol)
+        if block:
+            return block
 
-        return move
+        deadline = time.time() + self.time_budget
+        best_move = None
+
+        for d in range(1, self.depth + 1):
+            try:
+                score, move = self.alpha_beta(
+                    board, d,
+                    float('-inf'), float('inf'),
+                    True, deadline
+                )
+                if move is not None:
+                    best_move = move
+            except TimeUp:
+                # Keep whatever the previous completed depth found
+                break
+
+        if best_move is None:
+            occupied = set(board.keys())
+            moves = list(self._get_adjacent_moves(occupied))
+            if moves:
+                best_move = random.choice(moves)
+            else:
+                best_move = (0, 0)
+
+        return best_move
     
 
     def get_children(self, board, player):
-        children = []
+        """Generate next states - ordered by heuristic, not random"""
+        if len(board) == 0:
+            new_board = {(0, 0): player}
+            return [((0, 0), new_board)]
 
         occupied = set(board.keys())
-        moves = self._get_adjacent_moves(occupied)
+        moves = list(self._get_adjacent_moves(occupied))
 
+        # Sort by quick heuristic so strong moves are tried first -
+        # this is what makes alpha-beta pruning actually effective
+        moves.sort(
+            key=lambda m: self._evaluate_position(board, m, player),
+            reverse=True
+        )
+        moves = moves[:self.max_moves]
+
+        children = []
         for move in moves:
             new_board = board.copy()
             new_board[move] = player
             children.append((move, new_board))
 
         return children
-    
 
+    def alpha_beta(self, board, depth, alpha, beta, is_maximizing,
+                    deadline, last_move=None, last_player=None):
+        """Alpha-beta pruning with deadline enforcement"""
+        if time.time() > deadline:
+            raise TimeUp()
 
+        # Only check if the move that was JUST played created a win -
+        # much cheaper than scanning the whole board every node
+        if last_move is not None and self._is_winning_move(board, last_move, last_player):
+            if last_player == self.my_symbol:
+                return 100000, None
+            else:
+                return -100000, None
 
-    def evaluate(self, board):
-        best_me = 0
-        best_opp = 0
-
-        occupied = set(board.keys())
-        moves = self._get_adjacent_moves(occupied)
-
-        for move in moves:
-            best_me = max(
-                best_me,
-                self._evaluate_position(board, move, self.my_symbol)
-            )
-
-            best_opp = max(
-                best_opp,
-                self._evaluate_position(board, move, self.opponent_symbol)
-            )
-
-        return best_me - best_opp
-
-    def minimax_with_move(self, board, depth, is_maximizing):
         if depth == 0:
             return self.evaluate(board), None
 
         if is_maximizing:
-            best_score = float('-inf')
+            best_score = -999999
             best_move = None
 
             for move, child in self.get_children(board, self.my_symbol):
-                score, _ = self.minimax_with_move(child, depth - 1, False)
+                score, _ = self.alpha_beta(
+                    child, depth - 1, alpha, beta, False,
+                    deadline, move, self.my_symbol
+                )
 
                 if score > best_score:
                     best_score = score
                     best_move = move
 
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+
             return best_score, best_move
 
         else:
-            best_score = float('inf')
+            best_score = 999999
             best_move = None
 
             for move, child in self.get_children(board, self.opponent_symbol):
-                score, _ = self.minimax_with_move(child, depth - 1, True)
+                score, _ = self.alpha_beta(
+                    child, depth - 1, alpha, beta, True,
+                    deadline, move, self.opponent_symbol
+                )
 
                 if score < best_score:
                     best_score = score
                     best_move = move
 
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+
             return best_score, best_move
         
+    def evaluate(self, board):
+        my_score = 0
+        opponent_score = 0
+
+
+        for pos in board:
+            if board[pos] == self.my_symbol:
+                my_score += self._piece_score(board, pos, self.my_symbol)
+            elif board[pos] == self.opponent_symbol:
+                opponent_score += self._piece_score(board, pos, self.opponent_symbol)
+
+        return my_score - (opponent_score* 1.5)  # weight opponent's potential more heavily of probeer 2.0 of meer 
+    
+
+    def _piece_score(self, board, pos, player):
+        row, col = pos
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        score = 0
+
+        for dr, dc in directions:
+            count = 1
+            for step in range(1, 6):
+                r, c = row + dr*step, col + dc*step
+                if board.get((r, c)) == player:
+                    count += 1
+                else:
+                    break
+            for step in range(1, 6):
+                r, c = row - dr*step, col - dc*step
+                if board.get((r, c)) == player:
+                    count += 1
+                else:
+                    break
+
+
+            if count >= 6:
+                score += 1000000
+            elif count == 5:
+                    score += 100000
+            elif count == 4:
+                    score += 10000
+            elif count == 3:
+                    score += 100
+            elif count == 2:
+                    score += 10    
+        return score  
+                
+
+
+    #--------------------------------------------------------------- #
+
+    def _parse_grid(self, grid_dict):
+        """Convert grid dict to board"""
+        board = {}
+        for key, value in grid_dict.items():
+            try:
+                row, col = eval(key) if isinstance(key, str) else key
+                board[(row, col)] = value
+            except:
+                pass
+        return board
+    
+
+
+    #--------------------------------------------------------------- #
     
     def _parse_grid(self, grid_dict):
         """Convert grid dict to board"""
@@ -213,7 +323,7 @@ class StudentAgent:
 def main():
     """Main menu for students"""
 
-    SERVER_URL = "https://inf-tac-toe.apps.dataintelligencelab.nl"
+    SERVER_URL = " https://inf-tac-toe.apps.dataintelligencelab.nl"
     CREDENTIALS_FILE = ".credentials"
 
     # ------------------------------------------------------------------ #
@@ -390,4 +500,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-        
