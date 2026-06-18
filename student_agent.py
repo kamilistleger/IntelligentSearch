@@ -21,36 +21,97 @@ class StudentAgent:
         self.my_symbol = None
         self.opponent_symbol = None
     
-    def get_move(self, state: dict) -> Tuple[int, int]:
-        """
-        IMPLEMENT YOUR SEARCH ALGORITHM HERE!
-        
-        Args:
-            state: Game state dict with 'grid', 'your_symbol', etc.
-        
-        Returns:
-            (row, col): Your move
-        """
-        grid = state['grid']
+    def get_move(self, state):
+        board = self._parse_grid(state['grid'])
+
         self.my_symbol = state['your_symbol']
         self.opponent_symbol = state['opponent_symbol']
-        
-        # Parse grid
-        board = self._parse_grid(grid)
-        
-        if not board:
-            return (0, 0)
-        
-        # Simple strategy - improve this!
+
+         #win
         win_move = self._find_winning_move(board, self.my_symbol)
         if win_move:
             return win_move
-        
+
+         #block
         block_move = self._find_winning_move(board, self.opponent_symbol)
         if block_move:
-            return block_move
+             return block_move
+
+        score, move = self.minimax_with_move(
+          board,
+          depth=3,
+          is_maximizing=True
+    )
+
+        return move
+    
+
+    def get_children(self, board, player):
+        children = []
+
+        occupied = set(board.keys())
+        moves = self._get_adjacent_moves(occupied)
+
+        for move in moves:
+            new_board = board.copy()
+            new_board[move] = player
+            children.append((move, new_board))
+
+        return children
+    
+
+
+
+    def evaluate(self, board):
+        best_me = 0
+        best_opp = 0
+
+        occupied = set(board.keys())
+        moves = self._get_adjacent_moves(occupied)
+
+        for move in moves:
+            best_me = max(
+                best_me,
+                self._evaluate_position(board, move, self.my_symbol)
+            )
+
+            best_opp = max(
+                best_opp,
+                self._evaluate_position(board, move, self.opponent_symbol)
+            )
+
+        return best_me - best_opp
+
+    def minimax_with_move(self, board, depth, is_maximizing):
+        if depth == 0:
+            return self.evaluate(board), None
+
+        if is_maximizing:
+            best_score = float('-inf')
+            best_move = None
+
+            for move, child in self.get_children(board, self.my_symbol):
+                score, _ = self.minimax_with_move(child, depth - 1, False)
+
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+
+            return best_score, best_move
+
+        else:
+            best_score = float('inf')
+            best_move = None
+
+            for move, child in self.get_children(board, self.opponent_symbol):
+                score, _ = self.minimax_with_move(child, depth - 1, True)
+
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+
+            return best_score, best_move
         
-        return self._find_best_move(board)
     
     def _parse_grid(self, grid_dict):
         """Convert grid dict to board"""
@@ -152,7 +213,7 @@ class StudentAgent:
 def main():
     """Main menu for students"""
 
-    SERVER_URL = "http://localhost:5000"
+    SERVER_URL = "https://inf-tac-toe.apps.dataintelligencelab.nl"
     CREDENTIALS_FILE = ".credentials"
 
     # ------------------------------------------------------------------ #
@@ -329,3 +390,4 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+        
